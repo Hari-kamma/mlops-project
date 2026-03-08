@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "MLflow UI",
+      "runtimeExecutable": "mlflow",
+      "runtimeArgs": ["ui", "--host", "0.0.0.0", "--port", "5001"],
+      "port": 5001
+    },
+    {
+      "name": "JupyterLab",
+      "runtimeExecutable": "jupyter",
+      "runtimeArgs": ["lab", "--ip=0.0.0.0", "--port=8888", "--no-browser"],
+      "port": 8888
+    }
+  ]
+}

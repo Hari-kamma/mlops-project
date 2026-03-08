@@ -1,0 +1,18 @@
+{
+  "run_id": "655d959079ca41da89bcee63d9c7a3eb",
+  "accuracy": 0.9,
+  "f1_weighted": 0.8997493734335839,
+  "dataset_hash": "bcfd48be5633",
+  "input_shape": [
+    null,
+    4
+  ],
+  "input_dtype": "float32",
+  "class_names": [
+    "setosa",
+    "versicolor",
+    "virginica"
+  ],
+  "onnx_input_name": "float_input",
+  "onnx_output_name": "output_label"
+}

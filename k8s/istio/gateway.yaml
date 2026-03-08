@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Istio Gateway — exposes the Iris InferenceService over HTTP
+# ---------------------------------------------------------------------------
+# This Gateway binds to the Istio ingress gateway pod and accepts traffic
+# for *.kserve-models.example.com on port 80.
+#
+# Apply:
+#   kubectl apply -f k8s/istio/gateway.yaml
+# ---------------------------------------------------------------------------
+
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: iris-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway     # targets the default Istio ingress gateway pod
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*.kserve-models.example.com"   # matches iris.kserve-models.example.com
+
+---
+# ---------------------------------------------------------------------------
+# PeerAuthentication — allow plain-text internal traffic in kserve-models
+# ---------------------------------------------------------------------------
+# KServe's internal queue-proxy <-> model container traffic will fail under
+# Istio STRICT mTLS. Set PERMISSIVE here; tighten to STRICT once stable.
+# ---------------------------------------------------------------------------
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: kserve-models
+spec:
+  mtls:
+    mode: PERMISSIVE

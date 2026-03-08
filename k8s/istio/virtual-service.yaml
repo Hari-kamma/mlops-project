@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Istio VirtualService — routes iris.kserve-models.example.com → KServe
+# ---------------------------------------------------------------------------
+# KServe automatically creates its own VirtualService for internal routing,
+# but this top-level VirtualService is needed to connect the Gateway to it.
+#
+# NOTE: KServe InferenceService must be Ready before applying this, because
+# the destination host (iris-predictor-default.kserve-models.svc.cluster.local)
+# is created by KServe.
+#
+# Apply:
+#   kubectl apply -f k8s/istio/virtual-service.yaml
+# ---------------------------------------------------------------------------
+
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: iris-vs
+  namespace: kserve-models
+spec:
+  gateways:
+    - istio-system/iris-gateway
+  hosts:
+    - "iris.kserve-models.example.com"
+  http:
+    - match:
+        - uri:
+            prefix: /v2/models/iris
+      route:
+        - destination:
+            # KServe creates this ClusterIP service for the predictor.
+            # Name format: <inferenceservice-name>-predictor-default
+            host: iris-predictor-default.kserve-models.svc.cluster.local
+            port:
+              number: 80
+      # Pass through the original Host header so KServe can route correctly
+      headers:
+        request:
+          set:
+            Host: iris.kserve-models.svc.cluster.local
+
+---
+# ---------------------------------------------------------------------------
+# DestinationRule — disable mTLS on the KServe predictor destination
+# ---------------------------------------------------------------------------
+# The predictor pod's queue-proxy sidecar handles the connection; forcing
+# mTLS from this side causes double-encryption errors.
+
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: iris-predictor-dr
+  namespace: kserve-models
+spec:
+  host: iris-predictor-default.kserve-models.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE

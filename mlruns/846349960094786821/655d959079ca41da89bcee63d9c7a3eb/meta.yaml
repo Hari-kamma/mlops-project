@@ -1,0 +1,15 @@
+artifact_uri: mlflow-artifacts:/846349960094786821/655d959079ca41da89bcee63d9c7a3eb/artifacts
+end_time: 1773003323342
+entry_point_name: ''
+experiment_id: '846349960094786821'
+lifecycle_stage: active
+run_id: 655d959079ca41da89bcee63d9c7a3eb
+run_name: iris-rf
+run_uuid: 655d959079ca41da89bcee63d9c7a3eb
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1773003321451
+status: 3
+tags: []
+user_id: sagargottipati
