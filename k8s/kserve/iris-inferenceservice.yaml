@@ -1,76 +1,63 @@
 # ---------------------------------------------------------------------------
 # KServe InferenceService — Iris ONNX model
 # ---------------------------------------------------------------------------
+# Target cluster : AKS
+# KServe version : v0.16.0
+# Deployment mode: RawDeployment (no KNative)
+# Registry       : docker.cc.com
+# Namespace      : kserve
+# Ingress        : Istio gateway (istio-gateway/ingressgateway)
+# Inference URL  : http://iris.azure.cc.com/v2/models/iris/infer
+#
 # Prerequisites:
-#   - KServe installed on Minikube (run scripts/setup.sh first)
-#   - ONNX model uploaded to the storageUri below
-#     (see scripts/upload-model.sh for MinIO instructions)
+#   1. Model image pushed: ./scripts/build-push.sh
+#   2. imagePullSecret exists in kserve namespace:
+#      kubectl get secret <your-secret-name> -n kserve
 #
 # Apply:
 #   kubectl apply -f k8s/kserve/iris-inferenceservice.yaml
 #
 # Watch:
-#   kubectl get inferenceservice iris -n kserve-models -w
+#   kubectl get inferenceservice iris -n kserve -w
+#
+# Test:
+#   ./scripts/test-inference.sh
 # ---------------------------------------------------------------------------
-
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: kserve-models
-  labels:
-    istio-injection: enabled   # Istio sidecar injected into all pods here
 
 ---
 # ---------------------------------------------------------------------------
-# Secret: MinIO credentials
-# Change these if you're using a different object store.
+# ServiceAccount — attaches the registry imagePullSecret so the
+# storage initializer can pull the model OCI image from docker.cc.com
 # ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Secret
-metadata:
-  name: minio-s3-secret
-  namespace: kserve-models
-  annotations:
-    serving.kserve.io/s3-endpoint: minio.minio-system.svc.cluster.local:9000
-    serving.kserve.io/s3-usehttps: "0"          # MinIO on Minikube is plain HTTP
-    serving.kserve.io/s3-region: us-east-1
-    serving.kserve.io/s3-useanoncredential: "false"
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: minioadmin
-  AWS_SECRET_ACCESS_KEY: minioadmin
-
----
-# ServiceAccount that KServe pods will use to pull from MinIO
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: kserve-sa
-  namespace: kserve-models
-secrets:
-  - name: minio-s3-secret
+  name: iris-sa
+  namespace: kserve
+imagePullSecrets:
+  - name: docker-registry-creds.com
 
 ---
 # ---------------------------------------------------------------------------
 # InferenceService
+# KServe auto-creates the VirtualService for iris.azure.cc.com
+# based on the inferenceservice-config domainTemplate.
 # ---------------------------------------------------------------------------
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: iris
-  namespace: kserve-models
+  namespace: kserve
   annotations:
-    # Disable scale-to-zero during development so you don't wait for cold starts
-    autoscaling.knative.dev/minScale: "1"
+    serving.kserve.io/deploymentMode: RawDeployment
 spec:
   predictor:
-    serviceAccountName: kserve-sa
-    onnx:
-      # Point this at your MinIO bucket path after uploading the model.
-      # Format: s3://<bucket>/<path-to-directory-containing-model.onnx>
-      storageUri: s3://mlops-models/iris/
-      # KServe will look for a file named model.onnx inside the directory.
-      # Rename your iris_rf.onnx → model.onnx before uploading.
+    serviceAccountName: iris-sa
+    model:
+      modelFormat:
+        name: onnx
+      # OCI image containing model.onnx built by ./scripts/build-push.sh
+      storageUri: oci://docker.cc.com/iris-onnx-model:v1
       protocolVersion: v2
       resources:
         requests:

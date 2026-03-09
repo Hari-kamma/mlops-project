@@ -1,0 +1,4 @@
+FROM alpine:3.19
+# Model file is copied at build time after training.
+# Run scripts/build-push.sh which handles the rename to model.onnx.
+COPY models/model.onnx /model.onnx

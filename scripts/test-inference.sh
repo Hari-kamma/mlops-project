@@ -2,19 +2,19 @@
 # ---------------------------------------------------------------------------
 # test-inference.sh — Send a prediction request to the Iris InferenceService
 # ---------------------------------------------------------------------------
-# Prerequisites:
-#   - InferenceService is Ready:
-#       kubectl get inferenceservice iris -n kserve-models
-#   - minikube tunnel is running in another terminal
+# Target: AKS + KServe v0.16 RawDeployment + Istio ingress
 #
 # Usage:
 #   ./scripts/test-inference.sh [sepal_l] [sepal_w] [petal_l] [petal_w]
 #
 # Examples:
-#   ./scripts/test-inference.sh                    # uses default Setosa sample
+#   ./scripts/test-inference.sh                    # Setosa (default)
 #   ./scripts/test-inference.sh 5.1 3.5 1.4 0.2   # Setosa
 #   ./scripts/test-inference.sh 6.3 3.3 4.7 1.6   # Versicolor
 #   ./scripts/test-inference.sh 6.7 3.0 5.2 2.3   # Virginica
+#
+# Prerequisites:
+#   kubectl get inferenceservice iris -n kserve   # must show Ready=True
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -34,26 +34,29 @@ F4="${4:-0.2}"   # petal width
 
 CLASS_NAMES=("Setosa" "Versicolor" "Virginica")
 
+MODEL_NAME="iris"
+NAMESPACE="kserve"
+
 # ---------------------------------------------------------------------------
-# Resolve Istio ingress IP
+# Resolve Istio ingress gateway external IP/hostname (AKS LoadBalancer)
 # ---------------------------------------------------------------------------
-INGRESS_HOST=$(kubectl -n istio-system get service istio-ingressgateway \
+info "Resolving Istio ingress gateway address ..."
+INGRESS_HOST=$(kubectl -n istio-gateway get service ingressgateway \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
 
 if [[ -z "$INGRESS_HOST" ]]; then
-  warn "No LoadBalancer IP found. Is 'minikube tunnel' running?"
-  warn "Falling back to NodePort ..."
-  INGRESS_HOST=$(minikube ip)
-  INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway \
-    -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
-else
-  INGRESS_PORT=80
+  # Try hostname (AKS sometimes returns hostname instead of IP)
+  INGRESS_HOST=$(kubectl -n istio-gateway get service ingressgateway \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
 fi
 
-MODEL_NAME="iris"
-NAMESPACE="kserve-models"
-HOST_HEADER="${MODEL_NAME}.${NAMESPACE}.example.com"
-ENDPOINT="http://${INGRESS_HOST}:${INGRESS_PORT}/v2/models/${MODEL_NAME}/infer"
+if [[ -z "$INGRESS_HOST" ]]; then
+  die "Could not resolve Istio ingress gateway IP/hostname. Is the LoadBalancer provisioned?"
+fi
+
+# KServe domain template: {{ .Name }}.{{ .IngressDomain }} = iris.azure.cc.com
+HOST_HEADER="${MODEL_NAME}.azure.cc.com"
+ENDPOINT="http://${INGRESS_HOST}/v2/models/${MODEL_NAME}/infer"
 
 # ---------------------------------------------------------------------------
 # Verify InferenceService is ready
@@ -64,7 +67,7 @@ IS_READY=$(kubectl get inferenceservice "$MODEL_NAME" -n "$NAMESPACE" \
 if [[ "$IS_READY" != "True" ]]; then
   warn "InferenceService '${MODEL_NAME}' is not Ready yet:"
   kubectl get inferenceservice "$MODEL_NAME" -n "$NAMESPACE" 2>/dev/null || true
-  die "Deploy the model first: kubectl apply -f k8s/kserve/iris-inferenceservice.yaml"
+  die "Deploy first: kubectl apply -f k8s/kserve/iris-inferenceservice.yaml"
 fi
 
 # ---------------------------------------------------------------------------
@@ -87,11 +90,12 @@ EOF
 
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${CYAN}  Iris KServe Inference Test${NC}"
+echo -e "${CYAN}  Iris KServe Inference Test — AKS${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-info "Endpoint : $ENDPOINT"
-info "Host     : $HOST_HEADER"
-info "Features : sepal_length=$F1  sepal_width=$F2  petal_length=$F3  petal_width=$F4"
+info "Gateway   : ${INGRESS_HOST}"
+info "Host      : ${HOST_HEADER}"
+info "Endpoint  : ${ENDPOINT}"
+info "Features  : sepal_length=$F1  sepal_width=$F2  petal_length=$F3  petal_width=$F4"
 echo ""
 
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$ENDPOINT" \
@@ -114,7 +118,6 @@ fi
 echo -e "${GREEN}Response (HTTP $HTTP_CODE):${NC}"
 echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
 
-# Extract class index from the output_label output
 CLASS_IDX=$(echo "$BODY" | python3 -c "
 import sys, json
 resp = json.load(sys.stdin)
@@ -133,10 +136,10 @@ if [[ -n "$CLASS_IDX" && "$CLASS_IDX" =~ ^[0-9]+$ ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Bonus: hit the model metadata endpoint
+# Model metadata
 # ---------------------------------------------------------------------------
 echo ""
 info "Model metadata:"
 curl -s -H "Host: $HOST_HEADER" \
-  "http://${INGRESS_HOST}:${INGRESS_PORT}/v2/models/${MODEL_NAME}" \
+  "http://${INGRESS_HOST}/v2/models/${MODEL_NAME}" \
   | python3 -m json.tool 2>/dev/null || true

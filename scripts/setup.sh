@@ -1,205 +1,117 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# setup.sh — Install KServe + dependencies on Minikube (Mac/Linux)
+# setup.sh — Pre-flight check for AKS + KServe v0.16 deployment
 # ---------------------------------------------------------------------------
-# Order of operations (dependencies must be satisfied):
-#   1. Minikube
-#   2. Istio
-#   3. cert-manager        (KNative dependency)
-#   4. KNative Serving     (KServe dependency)
-#   5. KServe
-#   6. MinIO               (model storage)
+# This script verifies all prerequisites are in place on your AKS cluster
+# before deploying the InferenceService.
 #
 # Usage:
-#   chmod +x scripts/setup.sh
 #   ./scripts/setup.sh
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
 
-# ---- Versions (pin these to avoid surprises) --------------------------------
-MINIKUBE_CPUS=4
-MINIKUBE_MEMORY=8g
-MINIKUBE_DRIVER=docker          # change to 'hyperkit' on Mac if preferred
-
-ISTIO_VERSION=1.21.2
-CERT_MANAGER_VERSION=v1.14.5
-KNATIVE_VERSION=v1.14.0
-KSERVE_VERSION=v0.13.0
-
-# ---- Colors -----------------------------------------------------------------
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 
-# ---- Helpers ----------------------------------------------------------------
-wait_for_pods() {
-  local ns=$1 label=${2:-""} timeout=${3:-300}
-  info "Waiting for pods in namespace '$ns' (label: ${label:-all}) ..."
-  if [[ -n "$label" ]]; then
-    kubectl wait pod -n "$ns" -l "$label" \
-      --for=condition=Ready --timeout="${timeout}s"
-  else
-    kubectl wait pod -n "$ns" --all \
-      --for=condition=Ready --timeout="${timeout}s"
-  fi
-}
+KSERVE_NS="kserve"
+ISTIO_NS="istio-gateway"
+GATEWAY_NAME="ingressgateway"
+EXPECTED_KSERVE_VERSION="v0.16"
 
-check_deps() {
-  for cmd in minikube kubectl curl helm; do
-    command -v "$cmd" &>/dev/null || die "'$cmd' not found. Please install it first."
-  done
-  command -v istioctl &>/dev/null || {
-    warn "istioctl not found — will download Istio $ISTIO_VERSION"
-    curl -L https://istio.io/downloadIstio | ISTIO_VERSION=$ISTIO_VERSION sh -
-    export PATH="$PWD/istio-${ISTIO_VERSION}/bin:$PATH"
-  }
-}
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}  AKS + KServe Pre-flight Check${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-# =============================================================================
-# STEP 1 — Minikube
-# =============================================================================
-step1_minikube() {
-  info "=== STEP 1: Starting Minikube ==="
-  if minikube status | grep -q "Running"; then
-    warn "Minikube already running — skipping start"
-  else
-    minikube start \
-      --cpus="$MINIKUBE_CPUS" \
-      --memory="$MINIKUBE_MEMORY" \
-      --driver="$MINIKUBE_DRIVER" \
-      --addons=registry
-  fi
-  kubectl cluster-info
-}
+# ---------------------------------------------------------------------------
+# 1. kubectl connected to AKS
+# ---------------------------------------------------------------------------
+info "Checking kubectl context ..."
+CONTEXT=$(kubectl config current-context 2>/dev/null) || die "kubectl not configured or cluster unreachable"
+ok "kubectl context: $CONTEXT"
 
-# =============================================================================
-# STEP 2 — Istio
-# =============================================================================
-step2_istio() {
-  info "=== STEP 2: Installing Istio $ISTIO_VERSION ==="
-  istioctl install --set profile=demo -y
-  kubectl label namespace default istio-injection=enabled --overwrite
-  wait_for_pods istio-system "" 180
-  info "Istio ready."
-}
+# ---------------------------------------------------------------------------
+# 2. KServe CRDs
+# ---------------------------------------------------------------------------
+info "Checking KServe CRDs ..."
+kubectl get crd inferenceservices.serving.kserve.io &>/dev/null \
+  || die "KServe CRDs not found. Is KServe installed?"
+ok "KServe CRDs present"
 
-# =============================================================================
-# STEP 3 — cert-manager
-# =============================================================================
-step3_certmanager() {
-  info "=== STEP 3: Installing cert-manager $CERT_MANAGER_VERSION ==="
-  kubectl apply -f \
-    "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
-  info "Waiting for cert-manager webhooks to be ready ..."
-  kubectl wait pod -n cert-manager --all \
-    --for=condition=Ready --timeout=180s
-  info "cert-manager ready."
-}
+# ---------------------------------------------------------------------------
+# 3. KServe controller running
+# ---------------------------------------------------------------------------
+info "Checking KServe controller ..."
+KSERVE_READY=$(kubectl get pods -n "$KSERVE_NS" \
+  -l "control-plane=kserve-controller-manager" \
+  -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+[[ "$KSERVE_READY" == "True" ]] || warn "KServe controller pod not Ready — check: kubectl get pods -n $KSERVE_NS"
+[[ "$KSERVE_READY" == "True" ]] && ok "KServe controller is Running"
 
-# =============================================================================
-# STEP 4 — KNative Serving
-# =============================================================================
-step4_knative() {
-  info "=== STEP 4: Installing KNative Serving $KNATIVE_VERSION ==="
-  kubectl apply -f \
-    "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml"
-  kubectl apply -f \
-    "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml"
+# ---------------------------------------------------------------------------
+# 4. Istio ingress gateway
+# ---------------------------------------------------------------------------
+info "Checking Istio ingress gateway ..."
+kubectl get svc "$GATEWAY_NAME" -n "$ISTIO_NS" &>/dev/null \
+  || die "Istio ingressgateway service not found in namespace $ISTIO_NS"
 
-  # KNative + Istio integration
-  kubectl apply -f \
-    "https://github.com/knative/net-istio/releases/download/knative-${KNATIVE_VERSION}/net-istio.yaml"
+INGRESS_IP=$(kubectl -n "$ISTIO_NS" get svc "$GATEWAY_NAME" \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+INGRESS_HOSTNAME=$(kubectl -n "$ISTIO_NS" get svc "$GATEWAY_NAME" \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
 
-  # Patch KNative to use the Minikube ingress IP rather than a real DNS
-  kubectl patch configmap config-domain -n knative-serving \
-    --type=merge \
-    -p '{"data":{"example.com":""}}'
+if [[ -n "$INGRESS_IP" ]]; then
+  ok "Istio gateway external IP: $INGRESS_IP"
+elif [[ -n "$INGRESS_HOSTNAME" ]]; then
+  ok "Istio gateway external hostname: $INGRESS_HOSTNAME"
+else
+  warn "Istio gateway has no external IP/hostname yet (LoadBalancer pending)"
+fi
 
-  wait_for_pods knative-serving "" 180
-  info "KNative Serving ready."
-}
+# ---------------------------------------------------------------------------
+# 5. inferenceservice-config configmap
+# ---------------------------------------------------------------------------
+info "Checking inferenceservice-config ..."
+kubectl get cm inferenceservice-config -n "$KSERVE_NS" &>/dev/null \
+  || die "inferenceservice-config configmap not found in $KSERVE_NS"
+ok "inferenceservice-config present"
 
-# =============================================================================
-# STEP 5 — KServe
-# =============================================================================
-step5_kserve() {
-  info "=== STEP 5: Installing KServe $KSERVE_VERSION ==="
-  kubectl apply -f \
-    "https://github.com/kserve/kserve/releases/download/${KSERVE_VERSION}/kserve.yaml"
-  kubectl apply -f \
-    "https://github.com/kserve/kserve/releases/download/${KSERVE_VERSION}/kserve-cluster-resources.yaml"
+DEPLOY_MODE=$(kubectl get cm inferenceservice-config -n "$KSERVE_NS" \
+  -o jsonpath='{.data.deploy}' 2>/dev/null || echo "")
+[[ "$DEPLOY_MODE" == *"RawDeployment"* ]] && ok "RawDeployment mode confirmed" \
+  || warn "RawDeployment not set as default — verify inferenceservice-config deploy key"
 
-  wait_for_pods kserve "" 300
-  info "KServe ready."
-}
+# ---------------------------------------------------------------------------
+# 6. imagePullSecret for docker.cc.com
+# ---------------------------------------------------------------------------
+info "Checking imagePullSecret ..."
+SECRET_COUNT=$(kubectl get secrets -n "$KSERVE_NS" \
+  --field-selector type=kubernetes.io/dockerconfigjson \
+  -o name 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$SECRET_COUNT" -gt 0 ]]; then
+  ok "Found $SECRET_COUNT docker registry secret(s) in $KSERVE_NS namespace:"
+  kubectl get secrets -n "$KSERVE_NS" --field-selector type=kubernetes.io/dockerconfigjson -o name 2>/dev/null
+else
+  warn "No docker registry secrets found in $KSERVE_NS. You need one for docker.cc.com"
+  warn "Create with: kubectl create secret docker-registry cloudsmith-registry-creds \\"
+  warn "  --docker-server=docker.cc.com --docker-username=<user> --docker-password=<token> \\"
+  warn "  -n $KSERVE_NS"
+fi
 
-# =============================================================================
-# STEP 6 — MinIO (model storage)
-# =============================================================================
-step6_minio() {
-  info "=== STEP 6: Installing MinIO (model storage) ==="
-  kubectl create namespace minio-system 2>/dev/null || true
-
-  helm repo add minio https://charts.min.io/ 2>/dev/null || true
-  helm repo update
-
-  helm upgrade --install minio minio/minio \
-    --namespace minio-system \
-    --set rootUser=minioadmin \
-    --set rootPassword=minioadmin \
-    --set mode=standalone \
-    --set resources.requests.memory=512Mi \
-    --set persistence.size=5Gi
-
-  wait_for_pods minio-system "" 120
-
-  # Create the bucket that the InferenceService references
-  info "Creating 'mlops-models' bucket in MinIO ..."
-  kubectl run mc-setup --restart=Never --rm -i \
-    --image=minio/mc:latest \
-    --env="MC_HOST_local=http://minioadmin:minioadmin@minio.minio-system.svc.cluster.local:9000" \
-    -- sh -c "mc mb local/mlops-models --ignore-existing"
-
-  info "MinIO ready. Access key: minioadmin / minioadmin"
-}
-
-# =============================================================================
-# STEP 7 — Apply KServe manifests
-# =============================================================================
-step7_apply_manifests() {
-  info "=== STEP 7: Applying KServe + Istio manifests ==="
-  kubectl apply -f k8s/istio/gateway.yaml
-  # InferenceService applied separately after uploading the model
-  info "Gateway applied. Upload your ONNX model first, then run:"
-  info "  kubectl apply -f k8s/kserve/iris-inferenceservice.yaml"
-  info "  kubectl apply -f k8s/istio/virtual-service.yaml"
-}
-
-# =============================================================================
-# Main
-# =============================================================================
-main() {
-  check_deps
-  step1_minikube
-  step2_istio
-  step3_certmanager
-  step4_knative
-  step5_kserve
-  step6_minio
-  step7_apply_manifests
-
-  echo ""
-  info "============================================================"
-  info "  Setup complete! Next steps:"
-  info "  1. In a NEW terminal: minikube tunnel"
-  info "  2. Upload the ONNX model: ./scripts/upload-model.sh"
-  info "  3. Apply the InferenceService:"
-  info "     kubectl apply -f k8s/kserve/iris-inferenceservice.yaml"
-  info "     kubectl apply -f k8s/istio/virtual-service.yaml"
-  info "  4. Test inference: ./scripts/test-inference.sh"
-  info "============================================================"
-}
-
-main "$@"
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+info "Pre-flight check complete. Next steps:"
+info "  1. Train model     : ./scripts/train.sh"
+info "  2. Build & push    : ./scripts/build-push.sh"
+info "  3. Update secret   : edit imagePullSecrets name in k8s/kserve/iris-inferenceservice.yaml"
+info "  4. Deploy          : kubectl apply -f k8s/kserve/iris-inferenceservice.yaml"
+info "  5. Watch           : kubectl get inferenceservice iris -n kserve -w"
+info "  6. Test            : ./scripts/test-inference.sh"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
